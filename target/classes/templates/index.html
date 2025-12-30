@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title th:text="${appName}">spring-cicd-demo</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="container">
+    <h1 th:text="${appName}">spring-cicd-demo</h1>
+    <p>Mini interface pour tester l’API + démo CI/CD.</p>
+  </header>
+
+  <main class="container card">
+    <h2>Pages</h2>
+    <ul>
+      <li><a href="/ui/hello">UI Hello (form + fetch API)</a></li>
+      <li><a href="/actuator/health">Actuator health</a></li>
+      <li><a href="/api/hello">API hello (JSON)</a></li>
+    </ul>
+  </main>
+</body>
+</html>

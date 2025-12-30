@@ -1,6 +1,7 @@
 package com.example.cicd;
 
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.Instant;
@@ -11,9 +12,11 @@ import java.util.Map;
 public class HelloController {
 
   @GetMapping("/api/hello")
-  public Map<String, Object> hello() {
+  public Map<String, Object> hello(@RequestParam(name = "name", required = false) String name) {
+    String who = (name == null || name.trim().isEmpty()) ? "CI/CD" : name.trim();
+
     Map<String, Object> res = new HashMap<>();
-    res.put("message", "Hello CI/CD!");
+    res.put("message", "Hello " + who + "!");
     res.put("timestamp", Instant.now().toString());
     return res;
   }

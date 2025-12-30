@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>UI - Hello</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="container">
+    <a class="link" href="/">← Accueil</a>
+    <h1>UI - Hello</h1>
+    <p>Cette page appelle <code>/api/hello</code> et affiche le JSON.</p>
+  </header>
+
+  <main class="container card">
+    <form id="helloForm">
+      <label for="name">Nom (optionnel)</label>
+      <input id="name" name="name" type="text" th:attr="value=${defaultName}" />
+      <button type="submit">Appeler l’API</button>
+    </form>
+
+    <section class="result">
+      <h2>Résultat</h2>
+      <pre id="output">{}</pre>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
