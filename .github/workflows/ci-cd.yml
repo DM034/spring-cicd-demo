@@ -32,7 +32,7 @@ jobs:
           name: app-jar
           path: target/*.jar
 
-    cd:
+  cd:
     name: CD - Docker Build & Push
     if: github.ref == 'refs/heads/main'
     needs: ci
