@@ -16,8 +16,8 @@ public class HelloController {
     String who = (name == null || name.trim().isEmpty()) ? "CI/CD" : name.trim();
 
     Map<String, Object> res = new HashMap<>();
-    res.put("message", "Hello " + who + "!");
-    // res.put("message", "Salut " + who + "!");
+    // res.put("message", "Hello " + who + "!");
+    res.put("message", "Salut " + who + "!");
     res.put("timestamp", Instant.now().toString());
     return res;
   }
