@@ -2,66 +2,579 @@ name: CI-CD
 
 on:
   pull_request:
+    branches:
+      - main
+
   push:
-    branches: ["main"]
+    branches:
+      - main
+
+# Annule une ancienne exécution si un nouveau commit
+# est envoyé sur la même branche.
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: true
+
+# Permissions minimales nécessaires au workflow.
+permissions:
+  contents: read
+
+env:
+  JAVA_VERSION: "8"
+  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/spring-cicd-demo
+  CONTAINER_NAME: spring-cicd-demo
+  APPLICATION_PORT: "8080"
 
 jobs:
+
+  # =========================================================
+  # 1. INTÉGRATION CONTINUE
+  # =========================================================
   ci:
-    name: CI - Build & Tests
+    name: CI - Tests et packaging
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout
+      # -----------------------------------------------------
+      # Récupération du dépôt
+      # -----------------------------------------------------
+      - name: Checkout du projet
         uses: actions/checkout@v4
 
-      - name: Setup Java 8
+      # -----------------------------------------------------
+      # Installation de Java
+      # -----------------------------------------------------
+      - name: Installation de Java 8
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "8"
+          java-version: ${{ env.JAVA_VERSION }}
           cache: maven
 
-      - name: Tests
-        run: mvn -B clean test
+      # -----------------------------------------------------
+      # Affichage des versions pour faciliter le diagnostic
+      # -----------------------------------------------------
+      - name: Vérification des versions
+        run: |
+          java -version
+          mvn -version
 
-      - name: Package (Jar)
-        run: mvn -B -DskipTests package
+      # -----------------------------------------------------
+      # Exécution des tests et création du JAR
+      #
+      # verify exécute notamment :
+      # - la compilation ;
+      # - les tests ;
+      # - le packaging ;
+      # - les vérifications Maven éventuelles.
+      # -----------------------------------------------------
+      - name: Tests et création du JAR
+        run: mvn -B clean verify
 
-      - name: Upload Jar artifact
+      # -----------------------------------------------------
+      # Vérification qu'un JAR a bien été créé
+      # -----------------------------------------------------
+      - name: Vérification du JAR généré
+        shell: bash
+        run: |
+          set -e
+
+          JAR_FILE=$(find target \
+            -maxdepth 1 \
+            -type f \
+            -name "*.jar" \
+            ! -name "*-sources.jar" \
+            ! -name "*-javadoc.jar" \
+            | head -n 1)
+
+          if [ -z "$JAR_FILE" ]; then
+            echo "Aucun fichier JAR n'a été généré."
+            exit 1
+          fi
+
+          echo "JAR généré : $JAR_FILE"
+          ls -lh "$JAR_FILE"
+
+      # -----------------------------------------------------
+      # Conservation du JAR
+      # Le même JAR sera utilisé pour fabriquer l'image.
+      # -----------------------------------------------------
+      - name: Publication du JAR comme artifact
         uses: actions/upload-artifact@v4
         with:
           name: app-jar
-          path: target/*.jar
+          path: |
+            target/*.jar
+            !target/*-sources.jar
+            !target/*-javadoc.jar
+          if-no-files-found: error
+          retention-days: 7
 
-  cd:
-    name: CD - Docker Build & Push
-    if: github.ref == 'refs/heads/main'
-    needs: ci
+
+  # =========================================================
+  # 2. CONSTRUCTION ET PUBLICATION DE L'IMAGE DOCKER
+  # =========================================================
+  docker:
+    name: CD - Build et Push Docker
     runs-on: ubuntu-latest
+
+    # Le job Docker attend la réussite du job CI.
+    needs:
+      - ci
+
+    # L'image n'est publiée que pour un push sur main.
+    # Elle n'est pas publiée pendant une Pull Request.
+    if: >
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main'
+
+    outputs:
+      image-name: ${{ steps.image.outputs.name }}
+      image-tag: ${{ steps.image.outputs.tag }}
+      image-full: ${{ steps.image.outputs.full }}
+
     steps:
-      - name: Checkout
+      # -----------------------------------------------------
+      # Le Dockerfile est présent dans le dépôt.
+      # -----------------------------------------------------
+      - name: Checkout du projet
         uses: actions/checkout@v4
 
-      - name: Setup Java 8
-        uses: actions/setup-java@v4
+      # -----------------------------------------------------
+      # Téléchargement du JAR produit et testé par la CI.
+      #
+      # Le JAR est placé dans target/ pour être trouvé
+      # par l'instruction COPY du Dockerfile.
+      # -----------------------------------------------------
+      - name: Téléchargement du JAR
+        uses: actions/download-artifact@v4
         with:
-          distribution: temurin
-          java-version: "8"
-          cache: maven
+          name: app-jar
+          path: target
 
-      - name: Build Jar
-        run: mvn -B -DskipTests clean package
+      # -----------------------------------------------------
+      # Vérification du fichier téléchargé
+      # -----------------------------------------------------
+      - name: Vérification de l'artifact
+        run: |
+          echo "Contenu du dossier target :"
+          ls -lah target
 
-      - name: Login Docker Hub
+      # -----------------------------------------------------
+      # Préparation de Docker Buildx
+      # -----------------------------------------------------
+      - name: Configuration de Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # -----------------------------------------------------
+      # Connexion sécurisée à Docker Hub
+      # -----------------------------------------------------
+      - name: Connexion à Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build & Push image
+      # -----------------------------------------------------
+      # Calcul du nom et des tags de l'image
+      # -----------------------------------------------------
+      - name: Préparation des informations de l'image
+        id: image
+        shell: bash
+        run: |
+          IMAGE_NAME="${{ env.IMAGE_NAME }}"
+          IMAGE_TAG="${{ github.sha }}"
+          IMAGE_FULL="${IMAGE_NAME}:${IMAGE_TAG}"
+
+          echo "name=${IMAGE_NAME}" >> "$GITHUB_OUTPUT"
+          echo "tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "full=${IMAGE_FULL}" >> "$GITHUB_OUTPUT"
+
+          echo "Image : ${IMAGE_FULL}"
+
+      # -----------------------------------------------------
+      # Construction et publication de l'image
+      #
+      # Deux tags sont publiés :
+      # - latest ;
+      # - SHA exact du commit.
+      # -----------------------------------------------------
+      - name: Construction et publication de l'image Docker
+        id: docker-build
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: ./Dockerfile
           push: true
+
           tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/spring-cicd-demo:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/spring-cicd-demo:${{ github.sha }}
+            ${{ steps.image.outputs.name }}:latest
+            ${{ steps.image.outputs.full }}
+
+          labels: |
+            org.opencontainers.image.title=spring-cicd-demo
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # -----------------------------------------------------
+      # Résumé visible dans GitHub Actions
+      # -----------------------------------------------------
+      - name: Résumé de l'image publiée
+        shell: bash
+        run: |
+          {
+            echo "## Image Docker publiée"
+            echo ""
+            echo "- Image : \`${{ steps.image.outputs.full }}\`"
+            echo "- Tag stable : \`${{ steps.image.outputs.name }}:latest\`"
+            echo "- Commit : \`${{ github.sha }}\`"
+            echo "- Digest : \`${{ steps.docker-build.outputs.digest }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+
+  # =========================================================
+  # 3. DÉPLOIEMENT SUR LE SERVEUR
+  # =========================================================
+  deploy:
+    name: Déploiement en production
+    runs-on: ubuntu-latest
+
+    needs:
+      - docker
+
+    # Protection supplémentaire :
+    # le déploiement n'est autorisé que sur main.
+    if: >
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main'
+
+    # Créer cet environnement dans :
+    # Settings > Environments > New environment > production
+    environment:
+      name: production
+
+    env:
+      DEPLOY_IMAGE: ${{ needs.docker.outputs.image-full }}
+      DEPLOY_IMAGE_LATEST: ${{ needs.docker.outputs.image-name }}:latest
+
+    steps:
+      # -----------------------------------------------------
+      # Affichage de la version à déployer
+      # -----------------------------------------------------
+      - name: Informations du déploiement
+        run: |
+          echo "Commit à déployer : ${{ github.sha }}"
+          echo "Image à déployer : ${{ env.DEPLOY_IMAGE }}"
+
+      # -----------------------------------------------------
+      # Connexion au VPS par SSH
+      # -----------------------------------------------------
+      - name: Déploiement par SSH
+        uses: appleboy/ssh-action@v1.2.5
+        env:
+          DEPLOY_IMAGE: ${{ env.DEPLOY_IMAGE }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          CONTAINER_NAME: ${{ env.CONTAINER_NAME }}
+          APPLICATION_PORT: ${{ env.APPLICATION_PORT }}
+
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          port: ${{ secrets.SERVER_SSH_PORT }}
+          username: ${{ secrets.SERVER_USERNAME }}
+          key: ${{ secrets.SERVER_SSH_PRIVATE_KEY }}
+
+          envs: >
+            DEPLOY_IMAGE,
+            DOCKERHUB_USERNAME,
+            DOCKERHUB_TOKEN,
+            CONTAINER_NAME,
+            APPLICATION_PORT
+
+          command_timeout: 10m
+
+          script: |
+            set -eu
+
+            echo "========================================"
+            echo "Début du déploiement"
+            echo "Image : ${DEPLOY_IMAGE}"
+            echo "Conteneur : ${CONTAINER_NAME}"
+            echo "========================================"
+
+            # -----------------------------------------------
+            # Vérification de Docker
+            # -----------------------------------------------
+            if ! command -v docker >/dev/null 2>&1; then
+              echo "Docker n'est pas installé sur le serveur."
+              exit 1
+            fi
+
+            docker --version
+
+            # -----------------------------------------------
+            # Connexion à Docker Hub
+            # Nécessaire notamment pour les dépôts privés.
+            # -----------------------------------------------
+            echo "${DOCKERHUB_TOKEN}" |
+              docker login \
+                --username "${DOCKERHUB_USERNAME}" \
+                --password-stdin
+
+            # -----------------------------------------------
+            # Sauvegarde de l'image actuellement utilisée.
+            # Elle servira au rollback.
+            # -----------------------------------------------
+            OLD_IMAGE=""
+
+            if docker container inspect "${CONTAINER_NAME}" \
+              >/dev/null 2>&1; then
+
+              OLD_IMAGE=$(
+                docker container inspect \
+                  --format='{{.Config.Image}}' \
+                  "${CONTAINER_NAME}"
+              )
+
+              echo "Image actuellement déployée : ${OLD_IMAGE}"
+            else
+              echo "Aucun ancien conteneur trouvé."
+            fi
+
+            # -----------------------------------------------
+            # Téléchargement de la nouvelle image
+            # -----------------------------------------------
+            echo "Téléchargement de la nouvelle image..."
+            docker pull "${DEPLOY_IMAGE}"
+
+            # -----------------------------------------------
+            # Suppression d'un éventuel conteneur temporaire
+            # -----------------------------------------------
+            docker rm -f "${CONTAINER_NAME}-new" \
+              >/dev/null 2>&1 || true
+
+            # -----------------------------------------------
+            # Démarrage temporaire de la nouvelle version
+            #
+            # Le port 18080 permet de la tester avant de
+            # remplacer officiellement l'ancien conteneur.
+            # -----------------------------------------------
+            echo "Démarrage du conteneur temporaire..."
+
+            docker run -d \
+              --name "${CONTAINER_NAME}-new" \
+              --restart unless-stopped \
+              -p 127.0.0.1:18080:${APPLICATION_PORT} \
+              -e APP_VERSION="${DEPLOY_IMAGE}" \
+              "${DEPLOY_IMAGE}"
+
+            # -----------------------------------------------
+            # Attente du démarrage de l'application
+            #
+            # Le endpoint attendu est :
+            # /actuator/health
+            # -----------------------------------------------
+            echo "Vérification de la nouvelle version..."
+
+            HEALTH_OK=false
+            ATTEMPT=1
+            MAX_ATTEMPTS=30
+
+            while [ "${ATTEMPT}" -le "${MAX_ATTEMPTS}" ]; do
+              echo "Tentative de vérification ${ATTEMPT}/${MAX_ATTEMPTS}"
+
+              if curl \
+                --fail \
+                --silent \
+                --show-error \
+                "http://127.0.0.1:18080/actuator/health" \
+                >/dev/null; then
+
+                HEALTH_OK=true
+                break
+              fi
+
+              # Le conteneur s'est peut-être arrêté.
+              if [ "$(docker inspect \
+                --format='{{.State.Running}}' \
+                "${CONTAINER_NAME}-new" \
+                2>/dev/null || echo false)" != "true" ]; then
+
+                echo "Le nouveau conteneur s'est arrêté."
+                break
+              fi
+
+              ATTEMPT=$((ATTEMPT + 1))
+              sleep 5
+            done
+
+            # -----------------------------------------------
+            # Échec de la vérification
+            # L'ancienne version reste en fonctionnement.
+            # -----------------------------------------------
+            if [ "${HEALTH_OK}" != "true" ]; then
+              echo "La nouvelle version ne répond pas correctement."
+
+              echo "Logs du nouveau conteneur :"
+              docker logs \
+                --tail 200 \
+                "${CONTAINER_NAME}-new" || true
+
+              docker rm -f "${CONTAINER_NAME}-new" || true
+
+              echo "Déploiement annulé."
+              echo "L'ancienne version reste active."
+
+              exit 1
+            fi
+
+            echo "La nouvelle version répond correctement."
+
+            # -----------------------------------------------
+            # Arrêt de l'ancienne version
+            # -----------------------------------------------
+            if docker container inspect "${CONTAINER_NAME}" \
+              >/dev/null 2>&1; then
+
+              echo "Arrêt de l'ancienne version..."
+              docker rm -f "${CONTAINER_NAME}"
+            fi
+
+            # -----------------------------------------------
+            # Suppression du conteneur temporaire
+            # -----------------------------------------------
+            docker rm -f "${CONTAINER_NAME}-new"
+
+            # -----------------------------------------------
+            # Démarrage officiel sur le port 8080
+            # -----------------------------------------------
+            echo "Démarrage officiel de la nouvelle version..."
+
+            if ! docker run -d \
+              --name "${CONTAINER_NAME}" \
+              --restart unless-stopped \
+              -p ${APPLICATION_PORT}:${APPLICATION_PORT} \
+              -e APP_VERSION="${DEPLOY_IMAGE}" \
+              "${DEPLOY_IMAGE}"; then
+
+              echo "Impossible de démarrer la nouvelle version."
+
+              # ---------------------------------------------
+              # Rollback automatique
+              # ---------------------------------------------
+              if [ -n "${OLD_IMAGE}" ]; then
+                echo "Rollback vers ${OLD_IMAGE}"
+
+                docker rm -f "${CONTAINER_NAME}" \
+                  >/dev/null 2>&1 || true
+
+                docker run -d \
+                  --name "${CONTAINER_NAME}" \
+                  --restart unless-stopped \
+                  -p ${APPLICATION_PORT}:${APPLICATION_PORT} \
+                  -e APP_VERSION="${OLD_IMAGE}" \
+                  "${OLD_IMAGE}"
+              fi
+
+              exit 1
+            fi
+
+            # -----------------------------------------------
+            # Vérification finale
+            # -----------------------------------------------
+            echo "Vérification finale du déploiement..."
+
+            FINAL_HEALTH_OK=false
+            ATTEMPT=1
+            MAX_ATTEMPTS=30
+
+            while [ "${ATTEMPT}" -le "${MAX_ATTEMPTS}" ]; do
+              if curl \
+                --fail \
+                --silent \
+                --show-error \
+                "http://127.0.0.1:${APPLICATION_PORT}/actuator/health" \
+                >/dev/null; then
+
+                FINAL_HEALTH_OK=true
+                break
+              fi
+
+              ATTEMPT=$((ATTEMPT + 1))
+              sleep 5
+            done
+
+            # -----------------------------------------------
+            # Rollback si la vérification finale échoue
+            # -----------------------------------------------
+            if [ "${FINAL_HEALTH_OK}" != "true" ]; then
+              echo "La vérification finale a échoué."
+
+              docker logs \
+                --tail 200 \
+                "${CONTAINER_NAME}" || true
+
+              docker rm -f "${CONTAINER_NAME}" || true
+
+              if [ -n "${OLD_IMAGE}" ]; then
+                echo "Rollback vers l'image ${OLD_IMAGE}"
+
+                docker run -d \
+                  --name "${CONTAINER_NAME}" \
+                  --restart unless-stopped \
+                  -p ${APPLICATION_PORT}:${APPLICATION_PORT} \
+                  -e APP_VERSION="${OLD_IMAGE}" \
+                  "${OLD_IMAGE}"
+              else
+                echo "Aucune ancienne image disponible pour le rollback."
+              fi
+
+              exit 1
+            fi
+
+            # -----------------------------------------------
+            # Nettoyage des images inutilisées
+            # -----------------------------------------------
+            docker image prune -f
+
+            # -----------------------------------------------
+            # Affichage de l'état final
+            # -----------------------------------------------
+            echo "========================================"
+            echo "Déploiement terminé avec succès"
+            echo "========================================"
+
+            docker ps \
+              --filter "name=${CONTAINER_NAME}"
+
+            echo "Image réellement utilisée :"
+
+            docker inspect \
+              --format='{{.Config.Image}}' \
+              "${CONTAINER_NAME}"
+
+            echo "Réponse du health check :"
+
+            curl \
+              --fail \
+              --silent \
+              --show-error \
+              "http://127.0.0.1:${APPLICATION_PORT}/actuator/health"
+
+      # -----------------------------------------------------
+      # Résumé final dans GitHub Actions
+      # -----------------------------------------------------
+      - name: Résumé du déploiement
+        if: success()
+        run: |
+          {
+            echo "## Déploiement réussi"
+            echo ""
+            echo "- Environnement : \`production\`"
+            echo "- Image : \`${{ env.DEPLOY_IMAGE }}\`"
+            echo "- Commit : \`${{ github.sha }}\`"
+            echo "- Serveur : \`${{ secrets.SERVER_HOST }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
