@@ -257,8 +257,10 @@ jobs:
       name: production
 
     env:
-      DEPLOY_IMAGE: ${{ needs.docker.outputs.image-full }}
-      DEPLOY_IMAGE_LATEST: ${{ needs.docker.outputs.image-name }}:latest
+      DEPLOY_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/spring-cicd-demo:${{ github.sha }}
+      DEPLOY_IMAGE_LATEST: ${{ secrets.DOCKERHUB_USERNAME }}/spring-cicd-demo:latest
+      CONTAINER_NAME: spring-cicd-demo
+      APPLICATION_PORT: "8080"
 
     steps:
       # -----------------------------------------------------
