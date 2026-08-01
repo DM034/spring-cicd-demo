@@ -13,7 +13,7 @@ public class HelloController {
 
   @GetMapping("/api/hello")
   public Map<String, Object> hello(@RequestParam(name = "name", required = false) String name) {
-    String who = (name == null || name.trim().isEmpty()) ? "Miradooo" : name.trim();
+    String who = (name == null || name.trim().isEmpty()) ? "Maroussia" : name.trim();
 
     Map<String, Object> res = new HashMap<>();
     res.put("message", "Hello " + who + "!");
