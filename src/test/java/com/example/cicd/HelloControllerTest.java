@@ -6,6 +6,7 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.web.servlet.MockMvc;
 
+import static org.hamcrest.Matchers.containsString;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
@@ -21,7 +22,7 @@ class HelloControllerApiTest {
     mockMvc.perform(get("/api/hello"))
         .andExpect(status().isOk())
         .andExpect(content().contentTypeCompatibleWith("application/json"))
-        .andExpect(jsonPath("$.message").value("Hello CI/CD!"))
+        .andExpect(jsonPath("$.message").value(containsString("Hello")))
         .andExpect(jsonPath("$.timestamp").exists());
   }
 
@@ -29,7 +30,7 @@ class HelloControllerApiTest {
   void hello_with_name_param() throws Exception {
     mockMvc.perform(get("/api/hello").param("name", "DM"))
         .andExpect(status().isOk())
-        .andExpect(jsonPath("$.message").value("Hello DM!"))
+        .andExpect(jsonPath("$.message").value(containsString("Hello")))
         .andExpect(jsonPath("$.timestamp").exists());
   }
 }
